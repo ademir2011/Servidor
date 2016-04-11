@@ -29,7 +29,9 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.hibernate.Session;
@@ -46,94 +48,45 @@ public class Servidor {
     
     private static UsuarioDAO usuarioDAO;
     private static Usuario usuario;
+    private static ListFilesUtil listFilesUtil;
+    private static List<String> paths;
+    private static volatile boolean autenticado = true;
+    
+    private static ObjectOutputStream oos;
+    private static ObjectInputStream ois;
     
     
     /**
      * @param args the command line arguments
      */
-    public static void main(String[] args) throws IOException, ClassNotFoundException {
+    public static void main(String[] args) throws IOException, ClassNotFoundException, InterruptedException {
         
         usuarioDAO = new UsuarioDAO();
         usuario = new Usuario();
-       
+        listFilesUtil = new ListFilesUtil();
+        paths = new ArrayList<>();
+        
         try {
                 
-                ServerSocket srvSocket = new ServerSocket(PORTA);
+            ServerSocket srvSocket = new ServerSocket(PORTA);
+            
+            
+
+            while(true){
                 
-                while(true){
-                    
-                    System.out.println("... Esperando ...");
-                    Socket socket = srvSocket.accept();
-                    
-                    new Thread( new Runnable() {
-                        @Override
-                        public void run() {
-                            
-                            Socket socketConexao = socket;
-                            
-                            ObjectInputStream ois = null;
-                            
-                            try {
-                                ois = new ObjectInputStream( socketConexao.getInputStream() );
-                            } catch (IOException ex) {
-                                Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
-                            }
-                            
-                            System.out.println("recebido");
+                
+                System.out.println("... Esperando ...");
 
-                            Request request = null;
-                            
-                            try {
-                                request = (Request) ois.readObject();
-                            } catch (IOException ex) {
-                                Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
-                            } catch (ClassNotFoundException ex) {
-                                Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
-                            }
-                            
-                            System.out.println("Objeto recebido - ");
-                            
-                            usuario.setLogin(request.getLogin());
-                            usuario.setSenha(request.getSenha());
+                Socket socket = srvSocket.accept();
+                
+                ois = new ObjectInputStream( socket.getInputStream() );
+                oos = new ObjectOutputStream( socket.getOutputStream() );
 
-                            if(request.getOperacao().equals("registrar")){
+                new Thread(new EchoThread(socket, oos, ois)).start();  
+                
+                
 
-                                try {
-                                    if(registraUsuario(socketConexao)){
-                                        createDirectory();
-                                    } else {
-                                        System.out.println("Falha ao criar diretorio");
-                                    }
-                                } catch (IOException ex) {
-                                    Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
-                                }
-
-                            } else if (request.getOperacao().equals("logar")) {
-                                
-                                try {
-                                    if(logarUsuario(socketConexao)){
-                                        
-                                    } else {
-                                        socketConexao.close();
-                                    }
-                                } catch (IOException ex) {
-                                    Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
-                                }
-                                
-                            }
-                            
-                            try {
-                                socketConexao.close();
-                                System.out.println("Conexao fechada");
-                            } catch (IOException ex) {
-                                Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
-                            }
-                            
-                        }
-                    } ).start();
-                    
-                    
-//                    
+  
 //                    FileOutputStream fos = new FileOutputStream(dir+request.getNome());
 //                    fos.write(request.getConteudo());
 //                    fos.close();
@@ -146,13 +99,93 @@ public class Servidor {
 //                    ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
 //                    oos.writeObject(request);
                     
-                }
+            }
                 
                
                 
         } catch (IOException e) {
                 // TODO Auto-generated catch block
                 e.printStackTrace();
+        }
+        
+    }
+    
+    public static class EchoThread implements Runnable {
+
+        private Socket socket;
+        private ObjectOutputStream oos;
+        private ObjectInputStream ois;
+        
+        public EchoThread(Socket socket, ObjectOutputStream oos, ObjectInputStream ois) {
+            this.socket = socket;
+            this.oos = oos;
+            this.ois = ois;
+        }
+
+        @Override
+        public void run() {
+            
+            while (autenticado) {
+                            
+                System.out.println("Socket aberto"+socket.getRemoteSocketAddress());
+
+                System.out.println("recebido");
+
+                Request request = null;
+
+                try {
+                    request = (Request) ois.readObject();
+                } catch (IOException ex) {
+                    Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    break;
+                } catch (ClassNotFoundException ex) {
+                    Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    break;  
+                }
+                
+
+                System.out.println("Objeto request recebido com a operaçao de "+request.getOperacao());
+
+                if(request.getOperacao().equals("registrar")){
+
+                    try {
+                        registroNoBanco(request, socket, oos);
+                    } catch (IOException ex) {
+                        Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+                        
+                    try {
+                        autenticado = fecharConexao(socket, ois, oos);
+                    } catch (IOException ex) {
+                        Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+                    
+
+                } else if (request.getOperacao().equals("logar")) {
+                    autenticaUsuario(request);
+                    try {
+                        if(autenticado = logarUsuario(socket, oos)){
+                            
+                        } else {
+                            autenticado = fecharConexao(socket, ois, oos);
+                        }
+                    } catch (IOException ex) {
+                        Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+                    
+
+                } else if ( request.getOperacao().equals("e/r lista de arquivos") ) {
+
+                    try {
+                        devolverListaDeArquivos(socket, oos);
+                    } catch (IOException ex) {
+                        Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+
+                }
+
+            }
+            
         }
         
     }
@@ -166,18 +199,18 @@ public class Servidor {
         return bFile;
     }
     
-    public static boolean registraUsuario(Socket socket) throws IOException{
+    public static boolean registraUsuario(Socket socket, Usuario usuario, ObjectOutputStream oos) throws IOException{
         
         if(usuarioDAO.checkRegister(usuario)){
             usuarioDAO.addUsuario(usuario);
            
-            sendObject( new Reply("Registrado com sucesso!"), socket);
+            sendObject( new Reply("Registrado com sucesso!"), socket, oos);
             
             return true;
 
         } else {
             
-            sendObject( new Reply("Ja existe dados com esse login e senha!"), socket);
+            sendObject( new Reply("Ja existe dados com esse login e senha!"), socket, oos);
 
             return false;
         }
@@ -192,7 +225,7 @@ public class Servidor {
         
     }
     
-    public static boolean logarUsuario(Socket socket) throws IOException{
+    public static boolean logarUsuario(Socket socket, ObjectOutputStream oos) throws IOException{
         
         if(usuarioDAO.checkLogin(usuario)){
             
@@ -204,20 +237,91 @@ public class Servidor {
             reply.setLogin(usuario.getLogin());
             reply.setSenha(usuario.getSenha());
             
-            sendObject( reply, socket);
+            sendObject( reply, socket, oos);
             
             return true;
             
         } else {
-            sendObject( new Reply("Login ou senha errado !"), socket);
+            sendObject( new Reply("Login ou senha errado !"), socket, oos);
             return false;
         }
         
     }
     
-    public static void sendObject(Reply replyRegistro, Socket socket) throws IOException{
-        ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+    public static void sendObject(Reply replyRegistro, Socket socket, ObjectOutputStream oos) throws IOException{
         oos.writeObject(replyRegistro);
+    }
+    
+    public static void receiverAndSendObjectRequestReply(Socket socket, Reply reply) throws IOException, ClassNotFoundException{
+        
+        ObjectInputStream ois = ois = new ObjectInputStream( socket.getInputStream() );
+                          
+        Request request = (Request) ois.readObject();
+        
+        
+        
+    }
+    
+    public static void autenticaUsuario(Request request){
+        usuario.setLogin(request.getLogin());
+        usuario.setSenha(request.getSenha());
+
+        long id = usuarioDAO.getIdByUser(usuario);
+
+        usuario.setId(id);
+    }
+    
+    public static void registroNoBanco(Request request, Socket socket, ObjectOutputStream oos) throws IOException{
+        
+        usuario.setLogin(request.getLogin());
+        usuario.setSenha(request.getSenha());
+        long id = usuarioDAO.getIdByUser(usuario);
+        usuario.setId(id);
+        
+        if(registraUsuario(socket, usuario, oos)){
+            createDirectory();
+        } else {
+            System.out.println("Falha ao criar diretorio");
+        }
+        
+    }
+    
+    public static void devolverListaDeArquivos(Socket socket, ObjectOutputStream oos) throws IOException{
+        
+        List<String> paths = new ArrayList<String>();
+        
+        paths = listFilesUtil.listFilesAndFilesSubDirectories(paths, dir+usuario.getId()+"/");
+        
+        paths = getSplitPaths(paths);
+        
+        Reply reply = new Reply();
+        reply.setPaths(paths);
+
+        sendObject(reply, socket, oos);
+       
+    }
+    
+    
+    public static boolean fecharConexao(Socket socket, ObjectInputStream ois, ObjectOutputStream oos) throws IOException{
+        socket.close();
+        ois.close();
+        oos.close();
+        System.out.println("Socket fechado");
+        return false;
+    }
+    
+    public static List<String> getSplitPaths(List<String> paths){
+        
+        for(int i = 0; i < paths.size(); i++){
+            
+            String fullPath = paths.get(i);
+            paths.remove(paths.get(i));
+            String array[] = fullPath.split(dir+usuario.getId()+"/");
+            paths.add(i, array[1]);
+                    
+        }
+        
+        return paths;
     }
     
 }
