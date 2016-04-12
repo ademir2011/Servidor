@@ -31,7 +31,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.hibernate.Session;
@@ -61,11 +63,6 @@ public class Servidor {
      */
     public static void main(String[] args) throws IOException, ClassNotFoundException, InterruptedException {
         
-        usuarioDAO = new UsuarioDAO();
-        usuario = new Usuario();
-        listFilesUtil = new ListFilesUtil();
-        paths = new ArrayList<>();
-        
         try {
                 
             ServerSocket srvSocket = new ServerSocket(PORTA);
@@ -79,25 +76,15 @@ public class Servidor {
 
                 Socket socket = srvSocket.accept();
                 
-                ois = new ObjectInputStream( socket.getInputStream() );
-                oos = new ObjectOutputStream( socket.getOutputStream() );
-
-                new Thread(new EchoThread(socket, oos, ois)).start();  
+                usuarioDAO      = new UsuarioDAO();
+                usuario         = new Usuario();
+                listFilesUtil   = new ListFilesUtil();
+                paths           = new ArrayList<>();
                 
-                
+                ois             = new ObjectInputStream( socket.getInputStream() );
+                oos             = new ObjectOutputStream( socket.getOutputStream() );
 
-  
-//                    FileOutputStream fos = new FileOutputStream(dir+request.getNome());
-//                    fos.write(request.getConteudo());
-//                    fos.close();
-//                    
-//                    File file = new File("/home/ademir/OneBox/teste.txt");
-//                    
-//                    byte[] bFile = fileToByteArray(file);
-//                    
-//                    request = new Request(file.getName(),bFile,"/home/ademir/OneBox/",new Date());
-//                    ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
-//                    oos.writeObject(request);
+                new Thread(new EchoThread(socket, oos, ois)).start();
                     
             }
                 
@@ -182,6 +169,26 @@ public class Servidor {
                         Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
                     }
 
+                } else if ( request.getOperacao().equals("upload") ) {
+                    
+                    try {
+                        uploadFile(request);
+                    } catch (IOException ex) {
+                        Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+                    
+                    try {
+                        enviarMsgReply(socket);
+                    } catch (IOException ex) {
+                        Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+                } else if ( request.getOperacao().equals("download")) {
+                    try {
+                        downloadFile(socket, request);
+                    } catch (IOException ex) {
+                        Logger.getLogger(Servidor.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+                    
                 }
 
             }
@@ -258,8 +265,6 @@ public class Servidor {
                           
         Request request = (Request) ois.readObject();
         
-        
-        
     }
     
     public static void autenticaUsuario(Request request){
@@ -288,14 +293,15 @@ public class Servidor {
     
     public static void devolverListaDeArquivos(Socket socket, ObjectOutputStream oos) throws IOException{
         
-        List<String> paths = new ArrayList<String>();
+        Map<String, String> paths = new HashMap<String, String>();
         
         paths = listFilesUtil.listFilesAndFilesSubDirectories(paths, dir+usuario.getId()+"/");
         
-        paths = getSplitPaths(paths);
+        paths = getSplitPaths(paths, dir+usuario.getId()+"/");
         
         Reply reply = new Reply();
         reply.setPaths(paths);
+        reply.setObs("Lista de arquivos do servidor atualizadas para o cliente");
 
         sendObject(reply, socket, oos);
        
@@ -310,18 +316,68 @@ public class Servidor {
         return false;
     }
     
-    public static List<String> getSplitPaths(List<String> paths){
+    public static Map<String,String> getSplitPaths(Map<String,String> paths, String split){
         
-        for(int i = 0; i < paths.size(); i++){
+        Map<String, String> tempPaths = new HashMap<String, String>();
+        
+        for(Map.Entry<String, String> entry : paths.entrySet()) {
             
-            String fullPath = paths.get(i);
-            paths.remove(paths.get(i));
-            String array[] = fullPath.split(dir+usuario.getId()+"/");
-            paths.add(i, array[1]);
-                    
+            String fullPath = entry.getKey();
+            String array[] = fullPath.split(split);
+            tempPaths.put(array[1],entry.getValue());
+
         }
         
-        return paths;
+        return tempPaths;
+    }
+    
+    public static void uploadFile(Request request) throws FileNotFoundException, IOException{
+    
+        if(request.isDirectory() && !request.getNome().equals("pasta sem nome")){
+            new File(dir+usuario.getId()+"/"+request.getNome()).mkdirs();
+        } else if (!request.getNome().equals("pasta sem nome")) {
+            FileOutputStream fos = new FileOutputStream(dir+usuario.getId()+"/"+request.getNome());
+            File file = new File(dir+usuario.getId()+"/"+request.getNome());
+            file.setLastModified(request.getLastModified());
+            fos.write(request.getConteudo());
+            fos.close();
+        }
+        
+        
+    }
+    
+    public static void enviarMsgReply(Socket socket) throws IOException{
+        Reply reply = new Reply();
+        
+        reply.setObs("Arquivo sincronizado!");
+        
+        sendObject(reply, socket, oos);
+    }
+    
+    public static void downloadFile(Socket socket, Request request) throws IOException{
+        
+        File file = new File(dir+usuario.getId()+"/"+request.getNome());
+
+        System.out.println(file.getAbsolutePath());
+        System.out.println(file.getName());
+        
+        Reply reply = new Reply();
+
+        if(file.isDirectory()) { 
+            reply.setDirectory(true);
+            reply.setNome(file.getName());
+            reply.setObs("Diretorio enviado");
+        } else { 
+            byte[] bFile = fileToByteArray(file);
+            reply.setNome(request.getNome());
+            reply.setDirectory(false); 
+            reply.setConteudo( bFile );
+            reply.setLastModified(file.lastModified());
+            reply.setObs("Arquivo enviado");
+        }
+        
+        sendObject(reply, socket, oos);
+        
     }
     
 }
